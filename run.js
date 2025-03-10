@@ -8,6 +8,16 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 
 function delay(seconds) {
   return new Promise(resolve => setTimeout(resolve, seconds * 1000));
+ }
+
+function generateSessionId(length = 8) {
+  let result = '';
+  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const charactersLength = characters.length;
+  for (let i = 0; i < length; i++) {
+    result += characters.charAt(Math.floor(Math.random() * charactersLength));
+  }
+  return result;
 }
 
 class RequestHandler {
@@ -60,7 +70,7 @@ const newAgent = (proxy = null) => {
 };
 
 class LayerEdgeConnection {
-  constructor(proxy = null, privateKey = null, refCode = "6mzzX8G7") {
+  constructor(proxy = null, privateKey = null, refCode = "knYyWnsE") {
     this.refCode = refCode;
     this.proxy = proxy;
     this.retryCount = 30;
@@ -86,7 +96,6 @@ class LayerEdgeConnection {
       validateStatus: (status) => status < 500
     };
 
-    // Inisialisasi wallet dilakukan tanpa menampilkan log
     this.wallet = privateKey
       ? new Wallet(privateKey)
       : Wallet.createRandom();
@@ -104,6 +113,20 @@ class LayerEdgeConnection {
       }
     };
     return await RequestHandler.makeRequest(finalConfig, this.retryCount);
+  }
+
+  // Fungsi untuk mendapatkan public IP yang terlihat
+  async getPublicIP() {
+    try {
+      const response = await this.makeRequest("get", "https://api.ipify.org?format=json", { timeout: 10000 });
+      if (response && response.data && response.data.ip) {
+        return response.data.ip;
+      } else {
+        return "IP tidak ditemukan";
+      }
+    } catch (error) {
+      return "Error mengambil IP";
+    }
   }
 
   async dailyCheckIn() {
@@ -131,24 +154,34 @@ class LayerEdgeConnection {
     }
   }
 
-  async submitProof() {
-    try {
-      const timestamp = new Date().toISOString();
-      const message = `I am submitting a proof for LayerEdge at ${timestamp}`;
-      const signature = await this.wallet.signMessage(message);
-      const proofData = { proof: "GmEdgesss", signature, message, address: this.wallet.address };
-      const config = { data: proofData, headers: { 'Content-Type': 'application/json', 'Accept': '*/*' } };
-      const response = await this.makeRequest("post", "https://dashboard.layeredge.io/api/send-proof", config);
-      if (response && response.data && response.data.success) {
-        return { status: 'success', message: response.data.message };
-      } else {
-        const errMsg = response && response.data && response.data.message ? response.data.message : "Server Busy 504..";
-        return { status: 'error', message: `Proof submission failed: ${errMsg}` };
-      }
-    } catch (error) {
-      return { status: 'error', message: `Error submitting proof: ${error.message}` };
+ async submitProof() {
+     try {
+       const timestamp = new Date().toISOString();
+       const message = `I am submitting a proof for LayerEdge at ${timestamp}`;
+       const signature = await this.wallet.signMessage(message);
+       const proofData = {
+       proof: "Hello Edgeess i want Submit my Proof",
+       signature,
+       message,
+      walletAddress: this.wallet.address
+    };
+    const config = {
+      data: proofData,
+      headers: { 'Content-Type': 'application/json', 'Accept': '*/*' }
+    };
+    const response = await this.makeRequest("post", "https://referralapi.layeredge.io/api/card/submit-proof", config);
+    if (response && response.data && response.data.success) {
+      return { status: 'success', message: response.data.message };
+    } else {
+      const errMsg = response && response.data && response.data.message
+        ? response.data.message
+        : "Server Busy 504..";
+      return { status: 'error', message: `Proof submission failed: ${errMsg}` };
     }
+  } catch (error) {
+    return { status: 'error', message: `Error submitting proof: ${error.message}` };
   }
+}
 
   async claimProofSubmissionPoints() {
     try {
@@ -250,6 +283,109 @@ async function readWallets() {
   }
 }
 
+async function processWallet(wallet, proxy, walletIndex, totalWallets) {
+  const { address, privateKey } = wallet;
+  console.log(chalk.bold.cyanBright('='.repeat(80)));
+  console.log(chalk.bold.whiteBright(`Wallet : ${walletIndex + 1}/${totalWallets}`));
+  console.log(chalk.bold.whiteBright(`Starting Wallet : ${address}`));
+  console.log(chalk.bold.whiteBright(`Proxy: ${proxy}`));
+
+  let proxyForWallet = null;
+  if (proxy !== 'None') {
+    const sessionId = generateSessionId();
+    proxyForWallet = proxy.includes('?')
+      ? `${proxy}&session=${sessionId}`
+      : `${proxy}?session=${sessionId}`;
+    console.log(chalk.bold.whiteBright(`Generated Session ID: ${sessionId}`));
+  }
+
+  const socket = new LayerEdgeConnection(proxyForWallet, privateKey);
+  const usedIP = await socket.getPublicIP();
+  console.log(chalk.bold.whiteBright(`IP: ${usedIP}`));
+  console.log(chalk.bold.cyanBright('='.repeat(80)));
+
+  const spinnerDaily = ora({ text: `Checking Daily Check-In...`, spinner: 'dots2', color: 'cyan' }).start();
+  const daily = await socket.dailyCheckIn();
+  if (daily.status === 'success') {
+    spinnerDaily.succeed(chalk.bold.greenBright(` ${daily.message}`));
+  } else if (daily.status === 'warn') {
+    spinnerDaily.warn(chalk.bold.yellowBright(` ${daily.message}`));
+  } else {
+    spinnerDaily.fail(chalk.bold.redBright(` ${daily.message}`));
+  }
+
+  const spinnerProof = ora({ text: `Submitting Proof...`, spinner: 'dots2', color: 'cyan' }).start();
+  const proofTimeoutMs = 5 * 60 * 1000;
+  const submitProofPromise = socket.submitProof();
+  const proofTimeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error("Submitting proof timed out")), proofTimeoutMs)
+  );
+  let proof;
+  try {
+    proof = await Promise.race([submitProofPromise, proofTimeout]);
+    if (proof.status === 'success') {
+      spinnerProof.succeed(chalk.bold.greenBright(` Proof Submitted - ${proof.message}`));
+    } else {
+      spinnerProof.fail(chalk.bold.redBright(` ${proof.message}`));
+    }
+  } catch (error) {
+    spinnerProof.fail(chalk.bold.redBright(` ${error.message}`));
+    proof = { status: 'error', message: error.message };
+  }
+
+  const spinnerClaimProof = ora({ text: `Claiming Proof Points...`, spinner: 'dots2', color: 'cyan' }).start();
+  const claimProofTimeoutMs = 5 * 60 * 1000;
+  const claimProofPromise = socket.claimProofSubmissionPoints();
+  const claimProofTimeout = new Promise((_, reject) =>
+  setTimeout(() => reject(new Error("Claiming proof points timed out")), claimProofTimeoutMs)
+ );
+
+ try {
+  const claimProofResult = await Promise.race([claimProofPromise, claimProofTimeout]);
+  if (claimProofResult.status === 'success') {
+    spinnerClaimProof.succeed(chalk.bold.greenBright(` Proof Points Claimed - ${claimProofResult.message}`));
+  } else {
+    spinnerClaimProof.fail(chalk.bold.redBright(` ${claimProofResult.message}`));
+  }
+ } catch (error) {
+  spinnerClaimProof.fail(chalk.bold.redBright(` ${error.message}`));
+}
+
+
+  const spinnerNode = ora({ text: "Checking Node Status...", spinner: 'dots2', color: 'cyan' }).start();
+  const nodeStatus = await socket.checkNodeStatus();
+  if (nodeStatus.status === 'success') {
+    const stop = await socket.stopNode();
+    spinnerNode.text = chalk.bold.redBright(` Stop Node: ${stop.message}`);
+  } else {
+    spinnerNode.text = chalk.bold.greenBright(` Status Node: ${nodeStatus.message}`);
+  }
+
+  const connect = await socket.connectNode();
+  spinnerNode.text = chalk.bold.greenBright(` Status Node: ${connect.message}`);
+  spinnerNode.succeed();
+
+  const spinnerLightNode = ora({ text: `Claiming Light Node Points...`, spinner: 'dots2', color: 'cyan' }).start();
+  const lightNode = await socket.claimLightNodePoints();
+  if (lightNode.status === 'success') {
+    spinnerLightNode.succeed(chalk.bold.greenBright(` Light Node Points Claimed - ${lightNode.message}`));
+  } else {
+    spinnerLightNode.fail(chalk.bold.redBright(` ${lightNode.message}`));
+  }
+
+  const spinnerTotalPoints = ora({ text: `Checking Total Points...`, spinner: 'dots2', color: 'cyan' }).start();
+  const totalPoints = await socket.checkNodePoints();
+  if (totalPoints.status === 'success') {
+    spinnerTotalPoints.succeed(chalk.bold.cyanBright(` ${totalPoints.message}`));
+  } else {
+    spinnerTotalPoints.fail(chalk.bold.redBright(` ${totalPoints.message}`));
+  }
+
+  ora().succeed(chalk.bold.blueBright(` Wallet Processing Complete.`));
+  console.log(chalk.bold.cyanBright('='.repeat(80)));
+  console.log(`\n`);
+}
+
 async function run() {
   console.log(chalk.cyan('Starting Layer Edge Auto Bot...'));
 
@@ -262,84 +398,16 @@ async function run() {
   console.log(chalk.cyan(`Configuration loaded - Wallets: ${wallets.length}, Proxies: ${proxies.length} \n`));
 
   for (let i = 0; i < wallets.length; i++) {
-    const { address, privateKey } = wallets[i];
     const proxy = proxies[i % proxies.length] || 'None';
-
-    
-    console.log(chalk.bold.cyanBright('='.repeat(80)));
-    console.log(chalk.bold.whiteBright(`Wallet : ${i + 1}/${wallets.length}`));
-    console.log(chalk.bold.whiteBright(`Starting Wallet : ${address}`));
-    console.log(chalk.bold.whiteBright(`Proxy: ${proxy}`));
-    console.log(chalk.bold.cyanBright('='.repeat(80)));
-
-    const socket = new LayerEdgeConnection(proxy === 'None' ? null : proxy, privateKey);
-
-    const spinnerDaily = ora({ text: `Checking Daily Check-In...`, spinner: 'dots2', color: 'cyan' }).start();
-    const daily = await socket.dailyCheckIn();
-    if (daily.status === 'success') {
-      spinnerDaily.succeed(chalk.bold.greenBright(` ${daily.message}`));
-    } else if (daily.status === 'warn') {
-      spinnerDaily.warn(chalk.bold.yellowBright(` ${daily.message}`));
-    } else {
-      spinnerDaily.fail(chalk.bold.redBright(` ${daily.message}`));
+    try {
+      await processWallet(wallets[i], proxy, i, wallets.length);
+    } catch (err) {
+      console.log(chalk.red(`Processing wallet ${i + 1} encountered an error: ${err.message}`));
     }
-
-    const spinnerProof = ora({ text: `Submitting Proof...`, spinner: 'dots2', color: 'cyan' }).start();
-    const proof = await socket.submitProof();
-    if (proof.status === 'success') {
-      spinnerProof.succeed(chalk.bold.greenBright(` Proof Submitted - ${proof.message}`));
-    } else {
-      spinnerProof.fail(chalk.bold.redBright(` ${proof.message}`));
-    }
-
- 
-    const spinnerClaimProof = ora({ text: `Claiming Proof Points...`, spinner: 'dots2', color: 'cyan' }).start();
-    const claimProof = await socket.claimProofSubmissionPoints();
-    if (claimProof.status === 'success') {
-      spinnerClaimProof.succeed(chalk.bold.greenBright(` Proof Points Claimed - ${claimProof.message}`));
-    } else {
-      spinnerClaimProof.fail(chalk.bold.redBright(` ${claimProof.message}`));
-    }
-
- 
-    const spinnerNode = ora({ text: "Checking Node Status...", spinner: 'dots2', color: 'cyan' }).start();
-    const nodeStatus = await socket.checkNodeStatus();
-
-    if (nodeStatus.status === 'success') {
-      const stop = await socket.stopNode();
-      spinnerNode.text = chalk.bold.redBright(` Stop Node: ${stop.message}`);
-    } else {
-      spinnerNode.text = chalk.bold.greenBright(` Status Node: ${nodeStatus.message}`);
-    }
- 
-    const connect = await socket.connectNode();
-    spinnerNode.text = chalk.bold.greenBright(` Status Node: ${connect.message}`);
-    spinnerNode.succeed();
-
-    const spinnerLightNode = ora({ text: `Claiming Light Node Points...`, spinner: 'dots2', color: 'cyan' }).start();
-    const lightNode = await socket.claimLightNodePoints();
-    if (lightNode.status === 'success') {
-      spinnerLightNode.succeed(chalk.bold.greenBright(` Light Node Points Claimed - ${lightNode.message}`));
-    } else {
-      spinnerLightNode.fail(chalk.bold.redBright(` ${lightNode.message}`));
-    }
-
-
-    const spinnerTotalPoints = ora({ text: `Checking Total Points...`, spinner: 'dots2', color: 'cyan' }).start();
-    const totalPoints = await socket.checkNodePoints();
-    if (totalPoints.status === 'success') {
-      spinnerTotalPoints.succeed(chalk.bold.cyanBright(` ${totalPoints.message}`));
-    } else {
-      spinnerTotalPoints.fail(chalk.bold.redBright(` ${totalPoints.message}`));
-    }
-
-    ora().succeed(chalk.bold.blueBright(` Wallet Processing Complete.`));
-    console.log(chalk.bold.cyanBright('='.repeat(80)));
-    console.log(`\n`);
   }
 
-  console.log(chalk.blue('Cycle complete. Waiting 1 hour before next run...'));
-  await delay(60 * 60);
+  console.log(chalk.blue('Cycle complete. Waiting 12 hour before next run...'));
+  await delay(720 * 60);
   run();
 }
 
